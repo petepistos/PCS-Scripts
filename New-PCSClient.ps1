@@ -109,6 +109,7 @@ $F = @{
     RA_AssessYear       = "s1c03507e0"
     RA_LinkCAM          = "s5a5c0cdc2"
     RA_LinkPolicies     = "s57a6a29cb"
+    RA_LinkNYCRR        = "s326dedc01"
 
     # Security Policies
     SP_Customers        = "s6335f6ddd"
@@ -227,6 +228,48 @@ function Get-PolicyRecIDs {
     param([int[]]$PolicyNums)
     return $PolicyNums | ForEach-Object { $PolicyRecIDMap[$_] }
 }
+
+# NYCRR Section → RecID map
+# 500.01(n) exists twice; use "500.01(n)p" for Privileged Account, "500.01(n)t" for Third-Party
+# 500.15 exists twice; use "500.15a" for Encryption, "500.15b" for Encrypt at Rest / Compensating
+$NYCRRRecIDMap = @{
+    "500.01(c)"  = "69a64299a8c9231365e67c1a"   # Definition: CISO
+    "500.01(e)"  = "69a64321a8c9231365e67c1b"   # Definition: Covered Entity
+    "500.01(f)"  = "69a63d67d90a5c1409d0d9cc"   # Definition: Cybersecurity Event
+    "500.01(j)"  = "69a63d6ad90a5c1409d0d9cd"   # Definition: Multi-Factor Authentication
+    "500.01(k)"  = "69a64507a8c9231365e67c27"   # Definition: Nonpublic Information
+    "500.01(l)"  = "69a64505a8c9231365e67c26"   # Definition: Penetration Testing
+    "500.01(n)p" = "69a64405a8c9231365e67c1e"   # Definition: Privileged Account
+    "500.01(n)t" = "69a63d81d90a5c1409d0d9d0"   # Definition: Third-Party Service Provider
+    "500.01(p)"  = "69a63d82a028eeee017558cf"   # Definition: Risk Assessment
+    "500.02"     = "699c8007ae8602aaab02bb5f"   # Cybersecurity Program
+    "500.03"     = "699c8007ae8602aaab02bb60"   # Cybersecurity Policy
+    "500.04"     = "699c8007ae8602aaab02bb61"   # Cybersecurity Governance
+    "500.05"     = "699c8007ae8602aaab02bb63"   # Vulnerability Management
+    "500.06"     = "699c8007ae8602aaab02bb64"   # Audit Trail
+    "500.07"     = "699c8007ae8602aaab02bb65"   # Access Privileges and Management
+    "500.08"     = "699c8007ae8602aaab02bb66"   # Application Security
+    "500.09"     = "699c8007ae8602aaab02bb67"   # Risk Assessment
+    "500.10"     = "699c8007ae8602aaab02bb6a"   # Cybersecurity Personnel and Intelligence
+    "500.11"     = "699c8007ae8602aaab02bb6b"   # Third-Party Service Provider Security Policy
+    "500.12"     = "699c8007ae8602aaab02bb6d"   # Multifactor Authentication
+    "500.13"     = "699c8007ae8602aaab02bb6e"   # Asset Management and Data Retention
+    "500.14"     = "699c8007ae8602aaab02bb71"   # Monitoring and Training
+    "500.15a"    = "699c8007ae8602aaab02bb73"   # Encryption of Nonpublic Information
+    "500.15b"    = "699c8007ae8602aaab02bb74"   # Encrypt NPI at Rest / Compensating Controls
+    "500.16"     = "699c8007ae8602aaab02bb75"   # Incident Response and Business Continuity
+    "500.17"     = "699c8007ae8602aaab02bb77"   # Notices to Superintendent
+    "500.18"     = "699c8007ae8602aaab02bb78"   # Confidentiality
+    "500.19"     = "69a64c1ed21bdee921801e68"   # Exemptions
+    "500.20"     = "69a64c0c58185fb14bba8a80"   # Enforcement
+    "500.21"     = "69a64c1ed21bdee921801e67"   # Effective Date
+}
+
+function Get-NYCRRRecIDs {
+    param([string[]]$Sections)
+    return $Sections | ForEach-Object { $NYCRRRecIDMap[$_] }
+}
+
 # All 50 controls with full static content.
 # ImplGuide is a URL field — value must be @{url=...; label=...} or $null.
 # EvidenceStatus and Applicable must exactly match SmartSuite single-select options.
@@ -253,6 +296,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 3
         Policies       = @(2)
+        NYDFSRefs      = @("500.16")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-01_Disaster_Recovery_Plan_Reference.pdf" "P-01 Implementation Guide"
     },
     @{
@@ -263,6 +307,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 5
         Policies       = @(10)
+        NYDFSRefs      = @("500.16","500.17")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-02_Incident_Response_Plan_Reference.pdf" "P-02 Implementation Guide"
     },
     @{
@@ -273,6 +318,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 3
         Policies       = @(0, 8)
+        NYDFSRefs      = @("500.05","500.13")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-03_Patch_Management_Reference.pdf" "P-03 Implementation Guide"
     },
     @{
@@ -283,6 +329,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 1
         Policies       = @(3)
+        NYDFSRefs      = @("500.18","500.01(k)")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-04_Privacy_Notice_OptOut.pdf" "P-04 Implementation Guide"
     },
     @{
@@ -293,6 +340,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 1
         Policies       = @(13)
+        NYDFSRefs      = @("500.11","500.01(n)t")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-05_Vendor_Due_Diligence_Reference.pdf" "P-05 Implementation Guide"
     },
     @{
@@ -303,6 +351,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 2
         Policies       = @(8, 14)
+        NYDFSRefs      = @("500.07","500.14")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-06_Device_ScreenLock_Acknowledgment.pdf" "P-06 Implementation Guide"
     },
     @{
@@ -313,6 +362,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 1
         Policies       = @(9)
+        NYDFSRefs      = @("500.07","500.14")
         ImplGuide      = MakeUrl $EFT "P-07 Implementation Guide"
     },
     @{
@@ -323,6 +373,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 1
         Policies       = @(14)
+        NYDFSRefs      = @("500.02","500.07")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-08_Physical_Access_Controls_Reference.pdf" "P-08 Implementation Guide"
     },
     @{
@@ -333,6 +384,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 2
         Policies       = @(9)
+        NYDFSRefs      = @("500.10","500.14")
         ImplGuide      = MakeUrl $EFT "P-09 Implementation Guide"
     },
     @{
@@ -343,6 +395,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 5
         Policies       = @(1)
+        NYDFSRefs      = @("500.07","500.12")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-10_Remote_Access_Request_Form.pdf" "P-10 Implementation Guide"
     },
     @{
@@ -353,6 +406,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 1
         Policies       = @(0, 8)
+        NYDFSRefs      = @("500.05","500.08","500.13")
         ImplGuide      = MakeUrl $EFT "P-12 Implementation Guide"
     },
     @{
@@ -363,6 +417,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 4
         Policies       = @(9)
+        NYDFSRefs      = @("500.14")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-13_Security_Awareness_Training_Reference.pdf" "P-13 Implementation Guide"
     },
     @{
@@ -373,6 +428,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 5
         Policies       = @(4)
+        NYDFSRefs      = @("500.03","500.04")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-15_Security_Policy_Documentation_Reference.pdf" "P-15 Implementation Guide"
     },
     @{
@@ -383,6 +439,7 @@ $Controls = @(
         EvidenceStatus = "Accepted"
         InherentRisk   = 3
         Policies       = @(5)
+        NYDFSRefs      = @("500.13","500.15b")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-16_Paperless_Office_Reference.pdf" "P-16 Implementation Guide"
     },
     @{
@@ -393,16 +450,15 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(4)
+        NYDFSRefs      = @("500.02","500.04")
         ImplGuide      = $null
-    },
-    @{
-        ControlNumber  = "P-18"
         ControlName    = "The entity's risk management program performs annual risk assessments that assess compliance with the NY DFS Cybersecurity regulation."
         Domain         = "Risk Management"
         Applicable     = "Applicable"
         EvidenceStatus = "Accepted"
         InherentRisk   = 5
         Policies       = @(12)
+        NYDFSRefs      = @("500.09","500.01(p)")
         ImplGuide      = MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-18_Annual_Risk_Assessment_Reference.pdf" "P-18 Implementation Guide"
     },
     @{
@@ -413,6 +469,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 6
         Policies       = @(9)
+        NYDFSRefs      = @("500.14")
         ImplGuide      = $null
     },
 
@@ -425,6 +482,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 3
         Policies       = @(8)
+        NYDFSRefs      = @("500.05","500.08")
         ImplGuide      = MakeUrl $REM_W "W-01 Implementation Guide"
     },
     @{
@@ -435,6 +493,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(7, 8)
+        NYDFSRefs      = @("500.15a","500.15b")
         ImplGuide      = MakeUrl $REM_W "W-02 Implementation Guide"
     },
     @{
@@ -445,6 +504,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 3
         Policies       = @(0, 8)
+        NYDFSRefs      = @("500.05","500.13")
         ImplGuide      = MakeUrl $REM_W "W-03 Implementation Guide"
     },
     @{
@@ -455,6 +515,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(1, 8)
+        NYDFSRefs      = @("500.07","500.01(n)p")
         ImplGuide      = MakeUrl $REM_W "W-04 Implementation Guide"
     },
     @{
@@ -465,26 +526,23 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(8)
+        NYDFSRefs      = @("500.07")
         ImplGuide      = MakeUrl $REM_W "W-05 Implementation Guide"
-    },
-    @{
-        ControlNumber  = "W-06"
         ControlName    = "Host-based firewall is enabled and configured on all workstations."
         Domain         = "Technology"
         Applicable     = "Applicable"
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(8)
+        NYDFSRefs      = @("500.08")
         ImplGuide      = MakeUrl $REM_W "W-06 Implementation Guide"
-    },
-    @{
-        ControlNumber  = "W-07"
         ControlName    = "Removable media usage is restricted or controlled by policy and technical enforcement."
         Domain         = "Technology"
         Applicable     = "Applicable"
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(8)
+        NYDFSRefs      = @("500.13","500.15a")
         ImplGuide      = MakeUrl $REM_W "W-07 Implementation Guide"
     },
     @{
@@ -495,6 +553,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(0, 8)
+        NYDFSRefs      = @("500.08","500.13")
         ImplGuide      = MakeUrl $REM_W "W-08 Implementation Guide"
     },
     @{
@@ -505,6 +564,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(11)
+        NYDFSRefs      = @("500.06","500.14")
         ImplGuide      = MakeUrl $REM_W "W-09 Implementation Guide"
     },
     @{
@@ -515,6 +575,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(8)
+        NYDFSRefs      = @("500.08")
         ImplGuide      = MakeUrl $REM_W "W-10 Implementation Guide"
     },
     @{
@@ -525,6 +586,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(0)
+        NYDFSRefs      = @("500.13")
         ImplGuide      = MakeUrl $REM_W "W-11 Implementation Guide"
     },
 
@@ -537,6 +599,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 3
         Policies       = @(1)
+        NYDFSRefs      = @("500.12")
         ImplGuide      = MakeUrl $REM_M "M-01 Implementation Guide"
     },
     @{
@@ -547,6 +610,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 3
         Policies       = @(1)
+        NYDFSRefs      = @("500.07","500.12")
         ImplGuide      = MakeUrl $REM_M "M-02 Implementation Guide"
     },
     @{
@@ -557,6 +621,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(1)
+        NYDFSRefs      = @("500.07","500.01(n)p")
         ImplGuide      = MakeUrl $REM_M "M-03 Implementation Guide"
     },
     @{
@@ -567,6 +632,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(11)
+        NYDFSRefs      = @("500.06","500.14")
         ImplGuide      = MakeUrl $REM_M "M-04 Implementation Guide"
     },
     @{
@@ -577,6 +643,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(6, 8)
+        NYDFSRefs      = @("500.08","500.14")
         ImplGuide      = MakeUrl $REM_M "M-05 Implementation Guide"
     },
     @{
@@ -587,6 +654,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(8)
+        NYDFSRefs      = @("500.08")
         ImplGuide      = MakeUrl $REM_M "M-06 Implementation Guide"
     },
     @{
@@ -597,6 +665,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(5)
+        NYDFSRefs      = @("500.13","500.15a","500.01(k)")
         ImplGuide      = MakeUrl $REM_M "M-07 Implementation Guide"
     },
     @{
@@ -607,6 +676,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(1, 5)
+        NYDFSRefs      = @("500.07","500.13","500.15a")
         ImplGuide      = MakeUrl $REM_M "M-08 Implementation Guide"
     },
     @{
@@ -617,6 +687,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(11)
+        NYDFSRefs      = @("500.06","500.14")
         ImplGuide      = MakeUrl $REM_M "M-09 Implementation Guide"
     },
     @{
@@ -627,6 +698,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(1)
+        NYDFSRefs      = @("500.07","500.12")
         ImplGuide      = MakeUrl $REM_M "M-10 Implementation Guide"
     },
     @{
@@ -637,6 +709,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(1, 11)
+        NYDFSRefs      = @("500.05","500.14")
         ImplGuide      = MakeUrl $REM_M "M-11 Implementation Guide"
     },
 
@@ -649,6 +722,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(1)
+        NYDFSRefs      = @("500.07","500.12")
         ImplGuide      = MakeUrl $REM_AMS "AMS-01 Implementation Guide"
     },
     @{
@@ -659,6 +733,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(1)
+        NYDFSRefs      = @("500.07","500.13")
         ImplGuide      = MakeUrl $REM_AMS "AMS-02 Implementation Guide"
     },
     @{
@@ -669,6 +744,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(1, 11)
+        NYDFSRefs      = @("500.06","500.14")
         ImplGuide      = MakeUrl $REM_AMS "AMS-03 Implementation Guide"
     },
     @{
@@ -679,6 +755,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(1)
+        NYDFSRefs      = @("500.12")
         ImplGuide      = MakeUrl $REM_AMS "AMS-04 Implementation Guide"
     },
     @{
@@ -689,6 +766,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 2
         Policies       = @(1)
+        NYDFSRefs      = @("500.07","500.01(n)p")
         ImplGuide      = MakeUrl $REM_AMS "AMS-05 Implementation Guide"
     },
     @{
@@ -699,6 +777,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(7)
+        NYDFSRefs      = @("500.15a","500.15b")
         ImplGuide      = MakeUrl $REM_AMS "AMS-06 Implementation Guide"
     },
 
@@ -711,6 +790,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(6)
+        NYDFSRefs      = @("500.05","500.08")
         ImplGuide      = MakeUrl $REM_EXT "EXT-01 Implementation Guide"
     },
     @{
@@ -721,6 +801,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(6)
+        NYDFSRefs      = @("500.08","500.15a")
         ImplGuide      = MakeUrl $REM_EXT "EXT-02 Implementation Guide"
     },
     @{
@@ -731,6 +812,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(4)
+        NYDFSRefs      = @("500.08")
         ImplGuide      = MakeUrl $REM_EXT "EXT-03 Implementation Guide"
     },
     @{
@@ -741,6 +823,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(4, 8)
+        NYDFSRefs      = @("500.08")
         ImplGuide      = MakeUrl $REM_EXT "EXT-04 Implementation Guide"
     },
     @{
@@ -751,6 +834,7 @@ $Controls = @(
         EvidenceStatus = "Not Started"
         InherentRisk   = 1
         Policies       = @(6)
+        NYDFSRefs      = @("500.08")
         ImplGuide      = MakeUrl $REM_EXT "EXT-05 Implementation Guide"
     }
 )
@@ -874,6 +958,9 @@ foreach ($ctrl in $Controls) {
     }
     if ($ctrl.Policies -and $ctrl.Policies.Count -gt 0) {
         $raBody[$F.RA_LinkPolicies] = @(Get-PolicyRecIDs -PolicyNums $ctrl.Policies)
+    }
+    if ($ctrl.NYDFSRefs -and $ctrl.NYDFSRefs.Count -gt 0) {
+        $raBody[$F.RA_LinkNYCRR] = @(Get-NYCRRRecIDs -Sections $ctrl.NYDFSRefs)
     }
 
     $raResp = New-Record -AppId $AppId.RiskAssessments -Fields $raBody
