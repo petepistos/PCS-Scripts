@@ -1,4 +1,4 @@
-```powershell
+﻿```powershell
 <#
 .SYNOPSIS
     Pistos Compliance Sentinel - New Client Onboarding Script
@@ -73,6 +73,8 @@ $F = @{
     RP_Customer         = "s7bfc29230"
     RP_OCP_Template     = "sac8394f24"
     RP_User_Guide       = "sn3ojeg1"
+    RP_IRP_DRP_Plan     = "s4310618ef"
+    RP_IRP_DRP_Guide    = "s3c2k5bv"
     RA_Title            = "title"
     RA_ControlNumber    = "s6e4b09215"
     RA_ControlName      = "s2ca6be6cb"
@@ -293,8 +295,10 @@ Write-Host "   OK: CRB RecID: $CRBRecId"
 Write-Host ""; Write-Host ">> Creating Recovery and Inventory Plans record"
 $rpResp  = New-Record -AppId $AppId.RecoveryPlans -Fields @{
     $F.RP_Title=$CustomerName; $F.RP_Customer=@($CustomerRecId)
-    $F.RP_OCP_Template="https://github.com/petepistos/skopein-scripts/blob/main/Recovery-Plans/IRP_DRP_Plan.xlsx"
-    $F.RP_User_Guide="https://github.com/petepistos/skopein-scripts/blob/main/Recovery-Plans/IRP_DRP_Plan_User_Guide.pdf"
+    $F.RP_OCP_Template="https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Recovery-Plans/IRP_DRP_Plan_with_User_Guide.xlsx"
+    $F.RP_User_Guide="https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Recovery-Plans/IRP_DRP_User_Guide.pdf"
+    $F.RP_IRP_DRP_Plan="https://petepistos.github.io/skopein-scripts/Recovery-Plans/IRP_DRP_Plan.html"
+    $F.RP_IRP_DRP_Guide="https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Recovery-Plans/IRP_DRP_User_Guide.pdf"
 }
 $RPRecId = $rpResp.id
 Write-Host "   OK: Recovery Plans RecID: $RPRecId"
