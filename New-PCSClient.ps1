@@ -9,8 +9,8 @@
       2.  Create Customer Annual Metrics (CAM) record
       3.  Create Customer Receipts and Billing (CRB) record
       4.  Create Recovery and Inventory Plans record
-      5.  Create 50 Risk Assessment records linked to CAM
-      6.  PATCH CAM with CRB link and all 50 Risk Assessment links
+      5.  Create 55 Risk Assessment records linked to CAM
+      6.  PATCH CAM with CRB link and all 55 Risk Assessment links
       7.  PATCH all 15 Security Policy records to add customer link
       8.  PATCH all 61 Training and Awareness Video records to add customer link
       9.  PATCH Customer record with all links
@@ -173,13 +173,14 @@ function Get-NYCRRRecIDs { param([string[]]$Sections)
     return $Sections | ForEach-Object { $NYCRRRecIDMap[$_] } }
 
 # =============================================================================
-# CONTROL LIBRARY (50 controls)
+# CONTROL LIBRARY (55 controls)
 # =============================================================================
 $EFT     = "https://github.com/petepistos/skopein-scripts/tree/main/Evidence%20Form%20Templates"
 $REM_W   = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/Windows%20Workstation"
 $REM_M   = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/MS%20365"
 $REM_AMS = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/AMS"
 $REM_EXT = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/External%20Scans"
+$REM_WA  = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/WebApp"
 
 function MakeUrl($url, $label) { if ([string]::IsNullOrEmpty($url)) { return $null }; return $url }
 
@@ -242,7 +243,14 @@ $Controls = @(
     @{ ControlNumber="EXT-02"; ControlName="A DMARC policy is published and enforced to prevent email domain spoofing."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("6"); NYDFSRefs=@("500.08","500.15a"); ImplGuide=MakeUrl $REM_EXT "EXT-02" },
     @{ ControlNumber="EXT-03"; ControlName="The robots.txt file is configured to prevent unintended exposure of sensitive paths."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("4"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_EXT "EXT-03" },
     @{ ControlNumber="EXT-04"; ControlName="Security headers (CSP, HSTS, X-Frame-Options, etc.) are configured on all web properties."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("4","8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_EXT "EXT-04" },
-    @{ ControlNumber="EXT-05"; ControlName="An SPF record is published to authorize legitimate mail senders for the domain."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("6"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_EXT "EXT-05" }
+    @{ ControlNumber="EXT-05"; ControlName="An SPF record is published to authorize legitimate mail senders for the domain."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("6"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_EXT "EXT-05" },
+
+    # WA Controls (Web Application scanner)
+    @{ ControlNumber="WA-1.1"; ControlName="Web application authentication and session controls protect credentials and prevent session hijacking."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=6; Policies=@("1"); NYDFSRefs=@("500.07","500.12"); ImplGuide=MakeUrl $REM_WA "WA-1.1" },
+    @{ ControlNumber="WA-1.2"; ControlName="Web application transport security enforces strong TLS, valid certificates, HSTS, and HTTPS-only delivery."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=4; Policies=@("7","8"); NYDFSRefs=@("500.15a","500.15b"); ImplGuide=MakeUrl $REM_WA "WA-1.2" },
+    @{ ControlNumber="WA-1.3"; ControlName="Web application security headers harden the browser against XSS, clickjacking, and MIME confusion attacks."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=6; Policies=@("4","8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_WA "WA-1.3" },
+    @{ ControlNumber="WA-1.4"; ControlName="Web application configuration does not disclose stack versions, source files, backup files, or directory listings."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=5; Policies=@("8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_WA "WA-1.4" },
+    @{ ControlNumber="WA-1.5"; ControlName="Web application input handling resists CSRF, reflected XSS, and SQL injection."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=4; Policies=@("8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_WA "WA-1.5" }
 )
 
 # =============================================================================
