@@ -61,6 +61,9 @@ $F = @{
     Cust_RiskAssess     = "s40zjaz2"
     Cust_SecPolicies    = "sjvb15al"
     Cust_TrainVideos    = "s6a41a897e"
+    Cust_SyncToken      = "s81dc03995"
+    Cust_Phone          = "s5e03d44a2"
+    Cust_Email          = "s000da1c94"
     CAM_Title           = "title"
     CAM_Customer        = "s66338ee26"
     CAM_CRB             = "sjq216p5"
@@ -277,6 +280,9 @@ function New-Record { param([string]$AppId, [hashtable]$Fields)
 function Update-Record { param([string]$AppId, [string]$RecId, [hashtable]$Fields)
     return Invoke-SS -Method PATCH -Url "$BaseUrl/$AppId/records/$RecId/" -Body $Fields }
 
+function Get-Record { param([string]$AppId, [string]$RecId)
+    return Invoke-SS -Method GET -Url "$BaseUrl/$AppId/records/$RecId/" }
+
 function Find-CustomerRecId { param([string]$Name)
     $resp = Invoke-SS -Method POST -Url "$BaseUrl/$($AppId.Customers)/records/list/" -Body @{ filter=@{}; sort=@(); fields_to_search=@() }
     $match = $resp.items | Where-Object { $_.title -eq $Name }
@@ -359,6 +365,51 @@ Update-Record -AppId $AppId.Customers -RecId $CustomerRecId -Fields @{
 } | Out-Null
 Write-Host "   OK: Customer record updated"
 
+# =============================================================================
+# IRDR PLAN PORTAL - generate token, push seed, save token to Customer
+# =============================================================================
+Write-Host ""; Write-Host ">> Setting up IRDR Plan portal access"
+
+# Generate per-client IRDR token (random GUID, no dashes)
+$IrdrToken = [guid]::NewGuid().ToString('N')
+
+# Read Customer record to get Contact 1 phone/email for the seed
+$CustomerRecord = Get-Record -AppId $AppId.Customers -RecId $CustomerRecId
+$ContactPhone = $CustomerRecord.($F.Cust_Phone)
+$ContactEmail = $CustomerRecord.($F.Cust_Email)
+
+# Push seed to Pipedream so the client lands on a pre-filled Profile
+$SeedBody = @{
+    seedToken = $IrdrToken
+    seedData = @{
+        profile = @{
+            companyLegalName = $CustomerName
+            mainPhone        = $ContactPhone
+            generalEmail     = $ContactEmail
+        }
+    }
+} | ConvertTo-Json -Depth 5 -Compress
+
+try {
+    $SeedResp = Invoke-RestMethod `
+        -Uri 'https://eo4oxn8yubmyf3d.m.pipedream.net' `
+        -Method Post -ContentType 'application/json' -Body $SeedBody
+    if ($SeedResp.ok) { Write-Host "   OK: Seed pushed to portal" }
+    else { Write-Host "   WARN: Unexpected seed response: $($SeedResp | ConvertTo-Json -Compress)" -ForegroundColor Yellow }
+} catch {
+    Write-Host "   WARN: Seed push failed: $_" -ForegroundColor Yellow
+    Write-Host "         Token will still be saved on Customer record" -ForegroundColor Yellow
+}
+
+# Save token to Customer record
+Update-Record -AppId $AppId.Customers -RecId $CustomerRecId -Fields @{
+    $F.Cust_SyncToken = $IrdrToken
+} | Out-Null
+Write-Host "   OK: Token saved to Customer record"
+
+# Build personalized URL for the client
+$ClientIrdrUrl = "https://petepistos.github.io/IRDR-Plan/?c=$IrdrToken&seed=1"
+
 Write-Host ""
 Write-Host "======================================================"
 Write-Host "  PCS Onboarding Complete: $CustomerName"
@@ -370,5 +421,7 @@ Write-Host "  Recovery Plans RecID     : $RPRecId"
 Write-Host "  Risk Assessments created : $($RARecIds.Count)"
 Write-Host "  Security Policies patched: $($SecurityPolicyRecIDs.Count)"
 Write-Host "  Training Videos patched  : $($TrainingVideoRecIDs.Count)"
+Write-Host "  IRDR Sync Token          : $IrdrToken"
+Write-Host "  IRDR Client URL          : $ClientIrdrUrl"
 Write-Host "======================================================"
 ```
