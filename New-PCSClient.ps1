@@ -1,22 +1,49 @@
-﻿```powershell
 <#
 .SYNOPSIS
-    Pistos Compliance Sentinel - New Client Onboarding Script
+    Pistos Compliance Sentinel - New Client Onboarding Script (v2.0)
 
 .DESCRIPTION
+    Aligned with the Risk Assessment Template (Master sheet) as the source of truth.
+
+    Control library:
+      Process     : P-01 through P-13       (13 always-applicable, flat)
+      Workstation : W-1.1 through W-1.5     (created if 'W' in -TechEnvironments)
+      M365        : M-1.1 through M-1.5     (created if 'M' in -TechEnvironments)
+      External    : E-1.1 through E-1.5     (created if 'E' in -TechEnvironments)
+      Google WS   : G-1.1 through G-1.5     (created if 'G' in -TechEnvironments)
+      Linux       : L-1.1 through L-1.5     (created if 'L' in -TechEnvironments)
+      AMS         : AM-01 through AM-07     (created if -IncludeAMS, flat)
+
+    Numbering: P and AM are flat (no parent aggregate); W/M/E/G/L use decimal
+    notation because they are sub-controls of an environment aggregate that
+    rolls up to a single environment score (e.g., W-1.1..W-1.5 -> W).
+
+    Total records range: 18 (W only, no AMS) -> 45 (all environments + AMS).
+    Default scope (W/M/E + AMS) yields 35 records.
+
     Execution order:
       1.  Look up Customer record by name, capture RecID
       2.  Create Customer Annual Metrics (CAM) record
       3.  Create Customer Receipts and Billing (CRB) record
       4.  Create Recovery and Inventory Plans record
-      5.  Create 55 Risk Assessment records linked to CAM
-      6.  PATCH CAM with CRB link and all 55 Risk Assessment links
-      7.  PATCH all 15 Security Policy records to add customer link
-      8.  PATCH all 61 Training and Awareness Video records to add customer link
+      5.  Build in-scope control list and create Risk Assessment records linked to CAM
+      6.  PATCH CAM with CRB link and all Risk Assessment links
+      7.  PATCH all Security Policy records to add customer link
+      8.  PATCH all Training and Awareness Video records to add customer link
       9.  PATCH Customer record with all links
+     10.  Generate IRDR Plan portal token, push seed, save token
 
 .EXAMPLE
+    # Default scope: W/M/E + AMS (35 records)
     .\New-PCSClient.ps1 -CustomerName "Apex Brokerage" -ApiKey "your_api_key_here"
+
+.EXAMPLE
+    # Google Workspace shop, no Linux, with AMS
+    .\New-PCSClient.ps1 -CustomerName "Acme Insurance" -ApiKey "..." -TechEnvironments W,G,E
+
+.EXAMPLE
+    # Process + AMS only, no technology scans yet
+    .\New-PCSClient.ps1 -CustomerName "Smith Agency" -ApiKey "..." -TechEnvironments @()
 
 .NOTES
     Run from C:\pistos\
@@ -27,7 +54,15 @@
 param(
     [Parameter(Mandatory)] [string]$CustomerName,
     [string]$AssessmentYear = "2025",
-    [Parameter(Mandatory)] [string]$ApiKey
+    [Parameter(Mandatory)] [string]$ApiKey,
+
+    # Which technology environments to assess for this client.
+    # Valid: W (Windows), M (M365), E (External Scan), G (Google Workspace), L (Linux)
+    [ValidateSet('W','M','E','G','L')]
+    [string[]]$TechEnvironments = @('W','M','E'),
+
+    # Whether to create the AM-1.x AMS control records.
+    [bool]$IncludeAMS = $true
 )
 
 Set-StrictMode -Version Latest
@@ -82,7 +117,6 @@ $F = @{
     RA_ControlNumber    = "s6e4b09215"
     RA_ControlName      = "s2ca6be6cb"
     RA_InherentRisk     = "s45d89188b"
-    RA_Platform         = "s6bd84614f"
     RA_Applicable       = "scb215244e"
     RA_EvidenceStatus   = "sb4a4b9b71"
     RA_ImplGuide        = "s935240aaa"
@@ -140,7 +174,7 @@ $TrainingVideoRecIDs = @(
     "698e099b57c688b009efdec8","698e09fccc61f9c157c74c60"
 )
 
-# Policy Num -> RecID map (string keys)
+# Policy Num -> RecID map
 $PolicyRecIDMap = @{
     "0"="699d1e62306fc9aaa33057ba"; "1"="699c68284b668835aae4abcf"
     "2"="699c68284b668835aae4abd4"; "3"="699c70649c55ae0879ead3fc"
@@ -176,85 +210,111 @@ function Get-NYCRRRecIDs { param([string[]]$Sections)
     return $Sections | ForEach-Object { $NYCRRRecIDMap[$_] } }
 
 # =============================================================================
-# CONTROL LIBRARY (55 controls)
+# CONTROL LIBRARY (per Risk Assessment Template Master sheet, source of truth)
 # =============================================================================
-$EFT     = "https://github.com/petepistos/skopein-scripts/tree/main/Evidence%20Form%20Templates"
 $REM_W   = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/Windows%20Workstation"
 $REM_M   = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/MS%20365"
-$REM_AMS = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/AMS"
-$REM_EXT = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/External%20Scans"
-$REM_WA  = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/WebApp"
+$REM_AM  = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/AMS"
+$REM_E   = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/External%20Scans"
+$REM_G   = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/Google%20Workspace"
+$REM_L   = "https://github.com/petepistos/skopein-scripts/tree/main/Remediation_docs/Linux"
 
-function MakeUrl($url, $label) { if ([string]::IsNullOrEmpty($url)) { return $null }; return $url }
+# Process control SharePoint evidence-template links from spreadsheet K column.
+# NOTE: these are under /pete/ in personal SharePoint. Re-share to tenant-level
+# before client distribution.
+$SP_P15_PrivacyNotice = "https://pistosip-my.sharepoint.com/:w:/p/pete/IQB14An3ZR_GTpWKpkTWphKHAbcuv4nwcgZNQ28BrNRgFSg?e=3OnNMm"
+$SP_P16_VendorDD      = "https://pistosip-my.sharepoint.com/:f:/p/pete/IgCptSKX6tvYQLi4c7Xfje-0AYkyGRmaviq38dnpkvGnFKw?e=IPyU4q"
+$SP_P17_Handbook      = "https://pistosip-my.sharepoint.com/:w:/p/pete/IQCs0-KfA1QyS6tibsprjE55AfKu-p2b48H_K0mbDuhKHBo?e=8h8cUE"
+$SP_P19_Onboarding    = "https://pistosip-my.sharepoint.com/:w:/p/pete/IQD4P31eV9zfQqb6vdSf3g47AZmEW39mpCRzDTHmCCsH_-c?e=YSptoZ"
+$SP_P110_RemoteAccess = "https://pistosip-my.sharepoint.com/:w:/p/pete/IQDRhGh_mDWGTq8TfDalngquAZWEEF2SF3c5ne-33dZGs6c?e=5nWPcn"
+$SP_P112_CyberIns     = "https://pistosip-my.sharepoint.com/:w:/p/pete/IQBPfq5YXdbGQpCOx769Cno7AauikiTJ4G5-dzQzAVtYWpo?e=WOmWDP"
+$SP_AM_EZLynxProc     = "https://pistosip-my.sharepoint.com/my?id=%2Fpersonal%2Fpete%5Fpistosip%5Fcom%2FDocuments%2FDesktop%2FPCS%2FControls%20Implementation%20Steps%2FAMS%2FEzLynx%2FEZLynx%5FNYDFS%5FCybersecurity%5FProcedure"
 
-$Controls = @(
-    # P Controls
-    @{ ControlNumber="P-01"; ControlName="A documented Disaster Recovery Plan is maintained and tested on a defined schedule."; Domain="Operational Continuity"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=3; Policies=@("2"); NYDFSRefs=@("500.16"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-01_Disaster_Recovery_Plan_Reference.pdf" "P-01" },
-    @{ ControlNumber="P-02"; ControlName="A documented Incident Response Plan is maintained, including roles, escalation paths, and response procedures."; Domain="Operational Continuity"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=5; Policies=@("10"); NYDFSRefs=@("500.16","500.17"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-02_Incident_Response_Plan_Reference.pdf" "P-02" },
-    @{ ControlNumber="P-03"; ControlName="A formally documented patch management process is maintained, with defined SLAs based on severity."; Domain="Asset Management"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=3; Policies=@("0","8"); NYDFSRefs=@("500.05","500.13"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-03_Patch_Management_Reference.pdf" "P-03" },
-    @{ ControlNumber="P-04"; ControlName="A published privacy notice is maintained and includes an opt-out mechanism where applicable."; Domain="Customer and Consumer Privacy"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=1; Policies=@("3"); NYDFSRefs=@("500.18","500.01(k)"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-04_Privacy_Notice_OptOut.pdf" "P-04" },
-    @{ ControlNumber="P-05"; ControlName="A vendor due diligence process is implemented, including annual reviews of third-party service providers."; Domain="Risk Management"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=1; Policies=@("13"); NYDFSRefs=@("500.11","500.01(n)t"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-05_Vendor_Due_Diligence_Reference.pdf" "P-05" },
-    @{ ControlNumber="P-06"; ControlName="Employees are responsible for securing laptops and mobile devices when unattended and lock screens when stepping away."; Domain="Human Resources"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=2; Policies=@("8"); NYDFSRefs=@("500.07","500.14"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-06_Device_ScreenLock_Acknowledgment.pdf" "P-06" },
-    @{ ControlNumber="P-07"; ControlName="Employee onboarding and offboarding processes are documented."; Domain="Human Resources"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=1; Policies=@("9"); NYDFSRefs=@("500.07","500.14"); ImplGuide=MakeUrl $EFT "P-07" },
-    @{ ControlNumber="P-08"; ControlName="Only authorized personnel can access company facilities based on defined job roles and business need."; Domain="Environmental Security"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=1; Policies=@("14"); NYDFSRefs=@("500.02","500.07"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-08_Physical_Access_Controls_Reference.pdf" "P-08" },
-    @{ ControlNumber="P-09"; ControlName="Pre-employment background checks are completed for all hires, consistent with legal requirements."; Domain="Human Resources"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=2; Policies=@("9"); NYDFSRefs=@("500.10","500.14"); ImplGuide=MakeUrl $EFT "P-09" },
-    @{ ControlNumber="P-10"; ControlName="Remote access to internal systems requires an approved VPN with MFA."; Domain="Identity and Access Management"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=5; Policies=@("1"); NYDFSRefs=@("500.07","500.12"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-10_Remote_Access_Request_Form.pdf" "P-10" },
-    @{ ControlNumber="P-12"; ControlName="Secure configuration standards are documented and applied consistently to systems and endpoints."; Domain="Identity and Access Management"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=1; Policies=@("0","8"); NYDFSRefs=@("500.05","500.08","500.13"); ImplGuide=MakeUrl $EFT "P-12" },
-    @{ ControlNumber="P-13"; ControlName="Security awareness training is required and tailored to each user's role and technical responsibilities."; Domain="Human Resources"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=4; Policies=@("9"); NYDFSRefs=@("500.14"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-13_Security_Awareness_Training_Reference.pdf" "P-13" },
-    @{ ControlNumber="P-15"; ControlName="Security policies addressing each applicable regulatory requirement have been documented, reviewed, and formally approved by management."; Domain="Governance & Program"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=5; Policies=@("4"); NYDFSRefs=@("500.03","500.04"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-15_Security_Policy_Documentation_Reference.pdf" "P-15" },
-    @{ ControlNumber="P-16"; ControlName="The entity is paperless."; Domain="Customer and Consumer Privacy"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=3; Policies=@("5"); NYDFSRefs=@("500.13","500.15b"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-16_Paperless_Office_Reference.pdf" "P-16" },
-    @{ ControlNumber="P-17"; ControlName="The entity maintains cyberinsurance coverage appropriate to its risk profile and contractual obligations."; Domain="Operational Continuity"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("4"); NYDFSRefs=@("500.02","500.04"); ImplGuide=$null },
-    @{ ControlNumber="P-18"; ControlName="The entity's risk management program performs annual risk assessments that assess compliance with the NY DFS Cybersecurity regulation."; Domain="Risk Management"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=5; Policies=@("12"); NYDFSRefs=@("500.09","500.01(p)"); ImplGuide=MakeUrl "https://raw.githubusercontent.com/petepistos/skopein-scripts/main/Evidence%20Form%20Templates/P-18_Annual_Risk_Assessment_Reference.pdf" "P-18" },
-    @{ ControlNumber="P-19"; ControlName="Regular phishing simulations are conducted."; Domain="Human Resources"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=6; Policies=@("9"); NYDFSRefs=@("500.14"); ImplGuide=$null },
-
-    # W Controls
-    @{ ControlNumber="W-01"; ControlName="Endpoint protection is deployed and actively maintained on all workstations."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=3; Policies=@("8"); NYDFSRefs=@("500.05","500.08"); ImplGuide=MakeUrl $REM_W "W-01" },
-    @{ ControlNumber="W-02"; ControlName="Full disk encryption is enabled on all workstations."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("7","8"); NYDFSRefs=@("500.15a","500.15b"); ImplGuide=MakeUrl $REM_W "W-02" },
-    @{ ControlNumber="W-03"; ControlName="Operating system patches are applied within defined SLA timeframes based on severity."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=3; Policies=@("8","0"); NYDFSRefs=@("500.05","500.13"); ImplGuide=MakeUrl $REM_W "W-03" },
-    @{ ControlNumber="W-04"; ControlName="Local administrator accounts are disabled or restricted on all workstations."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("1","8"); NYDFSRefs=@("500.07","500.01(n)p"); ImplGuide=MakeUrl $REM_W "W-04" },
-    @{ ControlNumber="W-05"; ControlName="Screen lock and idle timeout policies are enforced on all workstations."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("8"); NYDFSRefs=@("500.07"); ImplGuide=MakeUrl $REM_W "W-05" },
-    @{ ControlNumber="W-06"; ControlName="Host-based firewall is enabled and configured on all workstations."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_W "W-06" },
-    @{ ControlNumber="W-07"; ControlName="Removable media usage is restricted or controlled by policy and technical enforcement."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("8"); NYDFSRefs=@("500.13","500.15a"); ImplGuide=MakeUrl $REM_W "W-07" },
-    @{ ControlNumber="W-08"; ControlName="Only approved software is permitted to execute on workstations."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("8","0"); NYDFSRefs=@("500.08","500.13"); ImplGuide=MakeUrl $REM_W "W-08" },
-    @{ ControlNumber="W-09"; ControlName="Audit logging is enabled and retained on all workstations."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("11"); NYDFSRefs=@("500.06","500.14"); ImplGuide=MakeUrl $REM_W "W-09" },
-    @{ ControlNumber="W-10"; ControlName="Secure boot and BIOS/UEFI password protections are configured on all workstations."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_W "W-10" },
-    @{ ControlNumber="W-11"; ControlName="Workstations are enrolled in a centralized device management platform."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("0"); NYDFSRefs=@("500.13"); ImplGuide=MakeUrl $REM_W "W-11" },
-
-    # M Controls
-    @{ ControlNumber="M-01"; ControlName="MFA is enforced for all Microsoft 365 user accounts."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=3; Policies=@("1"); NYDFSRefs=@("500.12"); ImplGuide=MakeUrl $REM_M "M-01" },
-    @{ ControlNumber="M-02"; ControlName="Conditional Access policies are configured to restrict access based on risk and location."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=3; Policies=@("1"); NYDFSRefs=@("500.07","500.12"); ImplGuide=MakeUrl $REM_M "M-02" },
-    @{ ControlNumber="M-03"; ControlName="Privileged administrative roles are separated from standard user accounts."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("1"); NYDFSRefs=@("500.07","500.01(n)p"); ImplGuide=MakeUrl $REM_M "M-03" },
-    @{ ControlNumber="M-04"; ControlName="Mailbox audit logging is enabled for all Microsoft 365 users."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("11"); NYDFSRefs=@("500.06","500.14"); ImplGuide=MakeUrl $REM_M "M-04" },
-    @{ ControlNumber="M-05"; ControlName="Anti-phishing and anti-spam policies are configured and enforced in Microsoft 365."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("8","6"); NYDFSRefs=@("500.08","500.14"); ImplGuide=MakeUrl $REM_M "M-05" },
-    @{ ControlNumber="M-06"; ControlName="Safe Links and Safe Attachments (Defender for Office 365) are enabled for all users."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_M "M-06" },
-    @{ ControlNumber="M-07"; ControlName="Data Loss Prevention (DLP) policies are defined and actively enforced."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("5"); NYDFSRefs=@("500.13","500.15a","500.01(k)"); ImplGuide=MakeUrl $REM_M "M-07" },
-    @{ ControlNumber="M-08"; ControlName="External sharing for SharePoint and OneDrive is restricted to authorized use cases."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("1"); NYDFSRefs=@("500.07","500.13","500.15a"); ImplGuide=MakeUrl $REM_M "M-08" },
-    @{ ControlNumber="M-09"; ControlName="The Unified Audit Log is enabled and retained per policy."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("11"); NYDFSRefs=@("500.06","500.14"); ImplGuide=MakeUrl $REM_M "M-09" },
-    @{ ControlNumber="M-10"; ControlName="Legacy authentication protocols are blocked for all Microsoft 365 accounts."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("1"); NYDFSRefs=@("500.07","500.12"); ImplGuide=MakeUrl $REM_M "M-10" },
-    @{ ControlNumber="M-11"; ControlName="Identity Protection risky sign-in alerts are configured and actively monitored."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("1"); NYDFSRefs=@("500.05","500.14"); ImplGuide=MakeUrl $REM_M "M-11" },
-
-    # AMS Controls
-    @{ ControlNumber="AMS-01"; ControlName="Smart Lockout is configured to prevent brute-force attacks on user accounts."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("1"); NYDFSRefs=@("500.07","500.12"); ImplGuide=MakeUrl $REM_AMS "AMS-01" },
-    @{ ControlNumber="AMS-02"; ControlName="User account lifecycle management processes are documented and enforced."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("1"); NYDFSRefs=@("500.07","500.13"); ImplGuide=MakeUrl $REM_AMS "AMS-02" },
-    @{ ControlNumber="AMS-03"; ControlName="Audit logging is enabled and retained for all identity and access events."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("1","11"); NYDFSRefs=@("500.06","500.14"); ImplGuide=MakeUrl $REM_AMS "AMS-03" },
-    @{ ControlNumber="AMS-04"; ControlName="MFA is enforced for all user accounts within the AMS environment."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("1"); NYDFSRefs=@("500.12"); ImplGuide=MakeUrl $REM_AMS "AMS-04" },
-    @{ ControlNumber="AMS-05"; ControlName="Administrative accounts are restricted to privileged tasks only and reviewed periodically."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("1"); NYDFSRefs=@("500.07","500.01(n)p"); ImplGuide=MakeUrl $REM_AMS "AMS-05" },
-    @{ ControlNumber="AMS-06"; ControlName="Data encryption is enforced at rest and in transit."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("7"); NYDFSRefs=@("500.15a","500.15b"); ImplGuide=MakeUrl $REM_AMS "AMS-06" },
-
-    # EXT Controls
-    @{ ControlNumber="EXT-01"; ControlName="A CAA DNS record is published to restrict unauthorized certificate issuance."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("6"); NYDFSRefs=@("500.05","500.08"); ImplGuide=MakeUrl $REM_EXT "EXT-01" },
-    @{ ControlNumber="EXT-02"; ControlName="A DMARC policy is published and enforced to prevent email domain spoofing."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("6"); NYDFSRefs=@("500.08","500.15a"); ImplGuide=MakeUrl $REM_EXT "EXT-02" },
-    @{ ControlNumber="EXT-03"; ControlName="The robots.txt file is configured to prevent unintended exposure of sensitive paths."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("4"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_EXT "EXT-03" },
-    @{ ControlNumber="EXT-04"; ControlName="Security headers (CSP, HSTS, X-Frame-Options, etc.) are configured on all web properties."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("4","8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_EXT "EXT-04" },
-    @{ ControlNumber="EXT-05"; ControlName="An SPF record is published to authorize legitimate mail senders for the domain."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=1; Policies=@("6"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_EXT "EXT-05" },
-
-    # WA Controls (Web Application scanner)
-    @{ ControlNumber="WA-1.1"; ControlName="Web application authentication and session controls protect credentials and prevent session hijacking."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=6; Policies=@("1"); NYDFSRefs=@("500.07","500.12"); ImplGuide=MakeUrl $REM_WA "WA-1.1" },
-    @{ ControlNumber="WA-1.2"; ControlName="Web application transport security enforces strong TLS, valid certificates, HSTS, and HTTPS-only delivery."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=4; Policies=@("7","8"); NYDFSRefs=@("500.15a","500.15b"); ImplGuide=MakeUrl $REM_WA "WA-1.2" },
-    @{ ControlNumber="WA-1.3"; ControlName="Web application security headers harden the browser against XSS, clickjacking, and MIME confusion attacks."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=6; Policies=@("4","8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_WA "WA-1.3" },
-    @{ ControlNumber="WA-1.4"; ControlName="Web application configuration does not disclose stack versions, source files, backup files, or directory listings."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=5; Policies=@("8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_WA "WA-1.4" },
-    @{ ControlNumber="WA-1.5"; ControlName="Web application input handling resists CSRF, reflected XSS, and SQL injection."; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=4; Policies=@("8"); NYDFSRefs=@("500.08"); ImplGuide=MakeUrl $REM_WA "WA-1.5" }
+# ----- Process Controls (always created; flat numbering P-01..P-13) -----
+$ProcessControls = @(
+    @{ ControlNumber="P-01"; ControlName="Security policies addressing each applicable regulatory requirement have been documented, reviewed, and formally approved by management."; Domain="Governance & Program";          Applicable="Applicable"; EvidenceStatus="Accepted";              InherentRisk=10; Policies=@("4");      NYDFSRefs=@("500.03","500.04");           ImplGuide=$null },
+    @{ ControlNumber="P-02"; ControlName="A documented Disaster Recovery Plan is maintained and tested on a defined schedule.";                                                       Domain="Operational Continuity";       Applicable="Applicable"; EvidenceStatus="Partially Implemented"; InherentRisk=5;  Policies=@("2");      NYDFSRefs=@("500.16");                    ImplGuide="https://petepistos.github.io/IRDR-Plan/" },
+    @{ ControlNumber="P-03"; ControlName="An inventory of hardware and software assets used to store, process and maintain NPI is maintained.";                                       Domain="Asset Management";             Applicable="Applicable"; EvidenceStatus="Partially Implemented"; InherentRisk=5;  Policies=@("0");      NYDFSRefs=@("500.13");                    ImplGuide="https://petepistos.github.io/IRDR-Plan/" },
+    @{ ControlNumber="P-04"; ControlName="A documented Incident Response Plan is maintained, including roles, escalation paths, and response procedures.";                            Domain="Operational Continuity";       Applicable="Applicable"; EvidenceStatus="Partially Implemented"; InherentRisk=10; Policies=@("10");     NYDFSRefs=@("500.16","500.17");           ImplGuide="https://petepistos.github.io/IRDR-Plan/" },
+    @{ ControlNumber="P-05"; ControlName="A published privacy notice is maintained and includes an opt-out mechanism where applicable.";                                              Domain="Customer and Consumer Privacy";Applicable="Applicable"; EvidenceStatus="Partially Implemented"; InherentRisk=6;  Policies=@("3");      NYDFSRefs=@("500.18","500.01(k)");        ImplGuide=$SP_P15_PrivacyNotice },
+    @{ ControlNumber="P-06"; ControlName="A vendor due diligence process is implemented, including annual reviews of third-party service providers.";                                 Domain="Risk Management";              Applicable="Applicable"; EvidenceStatus="Accepted";              InherentRisk=7;  Policies=@("13");     NYDFSRefs=@("500.11","500.01(n)t");       ImplGuide=$SP_P16_VendorDD },
+    @{ ControlNumber="P-07"; ControlName="The agency maintains and annually updates a written cybersecurity employee handbook that defines acceptable use of carrier portals, the Agency Management System, and office automation tools, and requires every employee, contractor, and authorized user to acknowledge the handbook in writing prior to being granted access to Nonpublic Information and at least annually thereafter."; Domain="Human Resources"; Applicable="Applicable"; EvidenceStatus="Accepted"; InherentRisk=6; Policies=@("9");  NYDFSRefs=@("500.03","500.14"); ImplGuide=$SP_P17_Handbook },
+    @{ ControlNumber="P-08"; ControlName="Phishing simulations are conducted at least monthly and results are tracked for remediation.";                                              Domain="Human Resources";              Applicable="Applicable"; EvidenceStatus="Accepted";              InherentRisk=10; Policies=@("9");      NYDFSRefs=@("500.14");                    ImplGuide=$null },
+    @{ ControlNumber="P-09"; ControlName="Pre-employment background checks are completed for all hires as part of an Onboarding Checklist.";                                          Domain="Human Resources";              Applicable="Applicable"; EvidenceStatus="Partially Implemented"; InherentRisk=7;  Policies=@("9");      NYDFSRefs=@("500.10","500.14");           ImplGuide=$SP_P19_Onboarding },
+    @{ ControlNumber="P-10"; ControlName="Remote access to internal systems requires an approved VPN with MFA.";                                                                       Domain="Identity and Access Management";Applicable="Applicable"; EvidenceStatus="Not Started";           InherentRisk=9;  Policies=@("1");      NYDFSRefs=@("500.07","500.12","500.15a"); ImplGuide=$SP_P110_RemoteAccess },
+    @{ ControlNumber="P-11"; ControlName="Security awareness training is required and tailored to each user's role and technical responsibilities.";                                  Domain="Human Resources";              Applicable="Applicable"; EvidenceStatus="Accepted";              InherentRisk=8;  Policies=@("9");      NYDFSRefs=@("500.14");                    ImplGuide=$null },
+    @{ ControlNumber="P-12"; ControlName="The agency maintains cyberinsurance coverage appropriate to its risk profile and contractual obligations.";                                 Domain="Operational Continuity";       Applicable="Applicable"; EvidenceStatus="Not Started";           InherentRisk=7;  Policies=@("4");      NYDFSRefs=@("500.02","500.04");           ImplGuide=$SP_P112_CyberIns },
+    @{ ControlNumber="P-13"; ControlName="The agency performs annual risk assessments that assess compliance with the NY DFS Cybersecurity regulation.";                              Domain="Risk Management";              Applicable="Applicable"; EvidenceStatus="Partially Implemented"; InherentRisk=10; Policies=@("12");     NYDFSRefs=@("500.09","500.01(p)");        ImplGuide=$null }
 )
+
+# ----- Workstation Controls (W) -----
+$WControls = @(
+    @{ ControlNumber="W-1.1"; ControlName="Identity & Access Control: Account Lockout, User Inventory, Password Policy, Admin Group Membership, Standard User Admin Rights, Break-Glass Account, UAC Level, User Rights Assignments";       Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=6; Policies=@("1","8");  NYDFSRefs=@("500.07","500.12","500.01(n)p"); ImplGuide=$REM_W },
+    @{ ControlNumber="W-1.2"; ControlName="Data Protection: BitLocker Encryption, Secure Boot, Cached Domain Credentials, Credential Guard / LSA Protection";                                                                                Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=4; Policies=@("7","8");  NYDFSRefs=@("500.15a","500.15b");            ImplGuide=$REM_W },
+    @{ ControlNumber="W-1.3"; ControlName="Threat Defense & Hardening: Software Inventory, AutoRun / AutoPlay, PowerShell Execution Policy, Windows Script Host, LLMNR / NetBIOS, WinRM, Remote Desktop / NLA, Windows Update, Defender Firewall, Local Admin Audit"; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=8; Policies=@("0","8");  NYDFSRefs=@("500.05","500.08","500.13");     ImplGuide=$REM_W },
+    @{ ControlNumber="W-1.4"; ControlName="Logging & Monitoring: Audit Policy, Event Log Sizes, Sysmon, PowerShell Logging, Endpoint Protection Monitoring";                                                                                  Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=5; Policies=@("11");     NYDFSRefs=@("500.06","500.14");              ImplGuide=$REM_W },
+    @{ ControlNumber="W-1.5"; ControlName="External Posture & Email: Secure DNS Configuration";                                                                                                                                              Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("8","6");  NYDFSRefs=@("500.08");                       ImplGuide=$REM_W }
+)
+
+# ----- M365 Controls (M) -----
+$MControls = @(
+    @{ ControlNumber="M-1.1"; ControlName="Identity & Access Control: Smart Lockout, User Account Inventory, Multifactor Authentication, Password Policy, Administrative Privilege Review, Conditional Access, Guest Access Restrictions, Legacy Authentication"; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=8; Policies=@("1");      NYDFSRefs=@("500.07","500.12","500.01(n)p"); ImplGuide=$REM_M },
+    @{ ControlNumber="M-1.2"; ControlName="Data Protection: Intune Device Encryption Compliance, Data Loss Prevention Policies, SharePoint / OneDrive External Sharing";                                                                       Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=5; Policies=@("5","7");  NYDFSRefs=@("500.13","500.15a","500.01(k)"); ImplGuide=$REM_M },
+    @{ ControlNumber="M-1.3"; ControlName="Threat Defense & Hardening: Safe Attachments / Safe Links, Anti-Phishing Policy";                                                                                                                  Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=3; Policies=@("8","6");  NYDFSRefs=@("500.08","500.14");              ImplGuide=$REM_M },
+    @{ ControlNumber="M-1.4"; ControlName="Logging & Monitoring: Unified Audit Log, Audit Log Retention, Microsoft Secure Score";                                                                                                             Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=5; Policies=@("11");     NYDFSRefs=@("500.06","500.14");              ImplGuide=$REM_M },
+    @{ ControlNumber="M-1.5"; ControlName="External Posture & Email: Mail Forwarding Controls, Shared Mailbox Authentication";                                                                                                                Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=4; Policies=@("1","6");  NYDFSRefs=@("500.07","500.08");              ImplGuide=$REM_M }
+)
+
+# ----- External Scan Controls (E) -----
+$EControls = @(
+    @{ ControlNumber="E-1.1"; ControlName="Identity & Access Control: (not applicable to external scan)";                                                                                                                                    Domain="Technology"; Applicable="N/A";        EvidenceStatus="Not Started"; InherentRisk=0;  Policies=@();         NYDFSRefs=@();                            ImplGuide=$REM_E },
+    @{ ControlNumber="E-1.2"; ControlName="Data Protection: TLS Certificate Validation, TLS Version Enforcement";                                                                                                                            Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=3;  Policies=@("7","8");  NYDFSRefs=@("500.15a","500.15b");         ImplGuide=$REM_E },
+    @{ ControlNumber="E-1.3"; ControlName="Threat Defense & Hardening: Port Scan, HTTP Methods, Open Redirect, Directory Listing, Exposed Admin Paths, HTTP Protocol Version";                                                               Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=5;  Policies=@("8","4");  NYDFSRefs=@("500.08");                    ImplGuide=$REM_E },
+    @{ ControlNumber="E-1.4"; ControlName="Logging & Monitoring: (not applicable to external scan)";                                                                                                                                         Domain="Technology"; Applicable="N/A";        EvidenceStatus="Not Started"; InherentRisk=0;  Policies=@();         NYDFSRefs=@();                            ImplGuide=$REM_E },
+    @{ ControlNumber="E-1.5"; ControlName="External Posture & Email: Security Headers, Permissions-Policy, CORS Configuration, SPF Record, DMARC Policy, DKIM Signing, CAA Record, DNSSEC, Zone Transfer Protection, MX Records, MTA-STS / TLSRPT, Email Authentication"; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=17; Policies=@("6","4","8"); NYDFSRefs=@("500.08","500.15a"); ImplGuide=$REM_E }
+)
+
+# ----- Google Workspace Controls (G) -----
+$GControls = @(
+    @{ ControlNumber="G-1.1"; ControlName="Identity & Access Control: Account Lockout, User Account Inventory, Multifactor Authentication, Password Policy, Administrative Privilege Review, Context-Aware Access, Guest/External Access Restrictions, Legacy Protocol Enforcement"; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=8; Policies=@("1");     NYDFSRefs=@("500.07","500.12","500.01(n)p"); ImplGuide=$REM_G },
+    @{ ControlNumber="G-1.2"; ControlName="Data Protection: Drive Encryption, Data Loss Prevention Rules, Drive External Sharing Restrictions";                                                                                              Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=5; Policies=@("5","7"); NYDFSRefs=@("500.13","500.15a","500.01(k)"); ImplGuide=$REM_G },
+    @{ ControlNumber="G-1.3"; ControlName="Threat Defense & Hardening: Gmail Advanced Protection, Anti-Phishing and Anti-Malware Settings";                                                                                                  Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=3; Policies=@("8","6"); NYDFSRefs=@("500.08","500.14");             ImplGuide=$REM_G },
+    @{ ControlNumber="G-1.4"; ControlName="Logging & Monitoring: Admin Audit Log, Login Audit Log, Drive Audit Log, Log Retention";                                                                                                          Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=5; Policies=@("11");    NYDFSRefs=@("500.06","500.14");             ImplGuide=$REM_G },
+    @{ ControlNumber="G-1.5"; ControlName="External Posture & Email: Mail Forwarding Controls, Shared Inbox Authentication";                                                                                                                 Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=4; Policies=@("1","6"); NYDFSRefs=@("500.07","500.08");             ImplGuide=$REM_G }
+)
+
+# ----- Linux Endpoint Controls (L) -----
+$LControls = @(
+    @{ ControlNumber="L-1.1"; ControlName="Identity & Access Control: SSH Root Login, SSH Password Auth, Password Complexity, Account Lockout, Passwordless Sudo, Inactive Accounts, Legacy Trust Files, Home Directory Permissions";        Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=6;  Policies=@("1","8"); NYDFSRefs=@("500.07","500.12","500.01(n)p"); ImplGuide=$REM_L },
+    @{ ControlNumber="L-1.2"; ControlName="Data Protection: LUKS Disk Encryption, AIDE File Integrity, GRUB Bootloader Password";                                                                                                            Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=3;  Policies=@("7","8"); NYDFSRefs=@("500.15a","500.15b");            ImplGuide=$REM_L },
+    @{ ControlNumber="L-1.3"; ControlName="Threat Defense & Hardening: /tmp Mount Options, World-Writable Files, SUID/SGID Audit, Firewall Enabled, SSH Idle Timeout, Listening Ports, ICMP Redirects, IP Forwarding, Unattended Upgrades, Pending Updates, Kernel Hardening"; Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=11; Policies=@("0","8"); NYDFSRefs=@("500.05","500.08","500.13");     ImplGuide=$REM_L },
+    @{ ControlNumber="L-1.4"; ControlName="Logging & Monitoring: auditd, System Logging, Log Rotation, Failed Login Logging";                                                                                                                Domain="Technology"; Applicable="Applicable"; EvidenceStatus="Not Started"; InherentRisk=5;  Policies=@("11");    NYDFSRefs=@("500.06","500.14");              ImplGuide=$REM_L },
+    @{ ControlNumber="L-1.5"; ControlName="External Posture & Email: (not applicable to internal Linux endpoint)";                                                                                                                           Domain="Technology"; Applicable="N/A";        EvidenceStatus="Not Started"; InherentRisk=0;  Policies=@();         NYDFSRefs=@();                            ImplGuide=$REM_L }
+)
+
+# ----- AMS Controls (AM, flat numbering AM-01..AM-07) -----
+# Default Applicable = "N/A equivalent technology" per Pete's design: AMS controls
+# are presumed covered by W or M unless the AMS uniquely owns them. Reviewer flips
+# Applicable to "Applicable" on a per-control basis if the AMS owns the control.
+$AMControls = @(
+    @{ ControlNumber="AM-01"; ControlName="Accounts lock out for at least 10 minutes after no fewer than five failed logon attempts.";                Domain="Identity and Access Management"; Applicable="N/A equivalent technology"; EvidenceStatus="Not Started"; InherentRisk=3; Policies=@("1");     NYDFSRefs=@("500.07","500.12");        ImplGuide=$SP_AM_EZLynxProc },
+    @{ ControlNumber="AM-02"; ControlName="User accounts are uniquely assigned to and attributable to a single individual.";                          Domain="Identity and Access Management"; Applicable="N/A equivalent technology"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("1");     NYDFSRefs=@("500.07");                 ImplGuide=$SP_AM_EZLynxProc },
+    @{ ControlNumber="AM-03"; ControlName="Logging and monitoring are enabled and configured to record security-relevant events.";                    Domain="Logging and Monitoring";         Applicable="N/A equivalent technology"; EvidenceStatus="Not Started"; InherentRisk=3; Policies=@("11");    NYDFSRefs=@("500.06","500.14");        ImplGuide=$SP_AM_EZLynxProc },
+    @{ ControlNumber="AM-04"; ControlName="Passwords meet the organization's approved complexity and length requirements.";                           Domain="Identity and Access Management"; Applicable="N/A equivalent technology"; EvidenceStatus="Not Started"; InherentRisk=7; Policies=@("1");     NYDFSRefs=@("500.07","500.12");        ImplGuide=$SP_AM_EZLynxProc },
+    @{ ControlNumber="AM-05"; ControlName="Roles and permissions are assigned to enforce least privilege and separation of duties.";                  Domain="Identity and Access Management"; Applicable="N/A equivalent technology"; EvidenceStatus="Not Started"; InherentRisk=3; Policies=@("1");     NYDFSRefs=@("500.07","500.01(n)p");    ImplGuide=$SP_AM_EZLynxProc },
+    @{ ControlNumber="AM-06"; ControlName="The system uses 2FA where available.";                                                                     Domain="Identity and Access Management"; Applicable="N/A equivalent technology"; EvidenceStatus="Not Started"; InherentRisk=5; Policies=@("1");     NYDFSRefs=@("500.12");                 ImplGuide=$SP_AM_EZLynxProc },
+    @{ ControlNumber="AM-07"; ControlName="Users do not have administrative privileges.";                                                             Domain="Identity and Access Management"; Applicable="N/A equivalent technology"; EvidenceStatus="Not Started"; InherentRisk=2; Policies=@("1");     NYDFSRefs=@("500.07","500.01(n)p");    ImplGuide=$SP_AM_EZLynxProc }
+)
+
+# ----- Build in-scope control list -----
+$Controls = [System.Collections.Generic.List[hashtable]]::new()
+$ProcessControls | ForEach-Object { $Controls.Add($_) }
+if ($TechEnvironments -contains 'W') { $WControls | ForEach-Object { $Controls.Add($_) } }
+if ($TechEnvironments -contains 'M') { $MControls | ForEach-Object { $Controls.Add($_) } }
+if ($TechEnvironments -contains 'E') { $EControls | ForEach-Object { $Controls.Add($_) } }
+if ($TechEnvironments -contains 'G') { $GControls | ForEach-Object { $Controls.Add($_) } }
+if ($TechEnvironments -contains 'L') { $LControls | ForEach-Object { $Controls.Add($_) } }
+if ($IncludeAMS)                     { $AMControls | ForEach-Object { $Controls.Add($_) } }
 
 # =============================================================================
 # HELPERS
@@ -292,6 +352,14 @@ function Find-CustomerRecId { param([string]$Name)
 # =============================================================================
 # MAIN
 # =============================================================================
+Write-Host ""
+Write-Host "======================================================"
+Write-Host "  PCS Onboarding: $CustomerName"
+Write-Host "  Tech Environments : $($TechEnvironments -join ', ')"
+Write-Host "  Include AMS       : $IncludeAMS"
+Write-Host "  Total Controls    : $($Controls.Count)"
+Write-Host "======================================================"
+
 Write-Host ""; Write-Host ">> Looking up Customer: $CustomerName"
 $CustomerRecId = Find-CustomerRecId -Name $CustomerName
 Write-Host "   OK: Customer RecID: $CustomerRecId"
@@ -322,21 +390,23 @@ $RARecIds = [System.Collections.Generic.List[string]]::new()
 
 foreach ($ctrl in $Controls) {
     $raBody = @{
-        $F.RA_Title=$("$CustomerName - $($ctrl.ControlNumber)")
-        $F.RA_LinkCAM=@($CAMRecId)
-        $F.RA_ControlNumber=$ctrl.ControlNumber
-        $F.RA_ControlName=$ctrl.ControlName
-        $F.RA_Domain=$ctrl.Domain
-        $F.RA_Applicable=$ctrl.Applicable
-        $F.RA_EvidenceStatus=$ctrl.EvidenceStatus
-        $F.RA_InherentRisk=$ctrl.InherentRisk
-        $F.RA_AssessYear=$AssessmentYear
+        $F.RA_Title          = "$CustomerName - $($ctrl.ControlNumber)"
+        $F.RA_LinkCAM        = @($CAMRecId)
+        $F.RA_ControlNumber  = $ctrl.ControlNumber
+        $F.RA_ControlName    = $ctrl.ControlName
+        $F.RA_Domain         = $ctrl.Domain
+        $F.RA_Applicable     = $ctrl.Applicable
+        $F.RA_EvidenceStatus = $ctrl.EvidenceStatus
+        $F.RA_InherentRisk   = $ctrl.InherentRisk
+        $F.RA_AssessYear     = $AssessmentYear
     }
     if ($null -ne $ctrl.ImplGuide) { $raBody[$F.RA_ImplGuide] = $ctrl.ImplGuide }
     if ($ctrl.Policies -and $ctrl.Policies.Count -gt 0) {
-        $raBody[$F.RA_LinkPolicies] = @(Get-PolicyRecIDs -PolicyNums $ctrl.Policies) }
+        $raBody[$F.RA_LinkPolicies] = @(Get-PolicyRecIDs -PolicyNums $ctrl.Policies)
+    }
     if ($ctrl.NYDFSRefs -and $ctrl.NYDFSRefs.Count -gt 0) {
-        $raBody[$F.RA_LinkNYCRR] = @(Get-NYCRRRecIDs -Sections $ctrl.NYDFSRefs) }
+        $raBody[$F.RA_LinkNYCRR] = @(Get-NYCRRRecIDs -Sections $ctrl.NYDFSRefs)
+    }
     $raResp = New-Record -AppId $AppId.RiskAssessments -Fields $raBody
     $RARecIds.Add($raResp.id)
     Write-Host "   OK: $($ctrl.ControlNumber) created"
@@ -350,12 +420,14 @@ Write-Host "   OK: CAM updated"
 Write-Host ""; Write-Host ">> Adding customer to all $($SecurityPolicyRecIDs.Count) Security Policy records"
 foreach ($spId in $SecurityPolicyRecIDs) {
     Update-Record -AppId $AppId.SecurityPolicies -RecId $spId -Fields @{ $F.SP_Customers=@($CustomerRecId) } | Out-Null
-    Write-Host "   OK: Policy $spId updated" }
+    Write-Host "   OK: Policy $spId updated"
+}
 
 Write-Host ""; Write-Host ">> Adding customer to all $($TrainingVideoRecIDs.Count) Training and Awareness Video records"
 foreach ($tvId in $TrainingVideoRecIDs) {
     Update-Record -AppId $AppId.TrainingVideos -RecId $tvId -Fields @{ $F.TV_Customers=@($CustomerRecId) } | Out-Null
-    Write-Host "   OK: Video $tvId updated" }
+    Write-Host "   OK: Video $tvId updated"
+}
 
 Write-Host ""; Write-Host ">> Updating Customer record with all links"
 Update-Record -AppId $AppId.Customers -RecId $CustomerRecId -Fields @{
@@ -370,15 +442,12 @@ Write-Host "   OK: Customer record updated"
 # =============================================================================
 Write-Host ""; Write-Host ">> Setting up IRDR Plan portal access"
 
-# Generate per-client IRDR token (random GUID, no dashes)
 $IrdrToken = [guid]::NewGuid().ToString('N')
 
-# Read Customer record to get Contact 1 phone/email for the seed
 $CustomerRecord = Get-Record -AppId $AppId.Customers -RecId $CustomerRecId
 $ContactPhone = $CustomerRecord.($F.Cust_Phone)
 $ContactEmail = $CustomerRecord.($F.Cust_Email)
 
-# Push seed to Pipedream so the client lands on a pre-filled Profile
 $SeedBody = @{
     seedToken = $IrdrToken
     seedData = @{
@@ -401,27 +470,39 @@ try {
     Write-Host "         Token will still be saved on Customer record" -ForegroundColor Yellow
 }
 
-# Save token to Customer record
 Update-Record -AppId $AppId.Customers -RecId $CustomerRecId -Fields @{
     $F.Cust_SyncToken = $IrdrToken
 } | Out-Null
 Write-Host "   OK: Token saved to Customer record"
 
-# Build personalized URL for the client
 $ClientIrdrUrl = "https://petepistos.github.io/IRDR-Plan/?c=$IrdrToken&seed=1"
+
+# =============================================================================
+# SUMMARY
+# =============================================================================
+$TotalInherentRisk = ($Controls | ForEach-Object { $_.InherentRisk } | Measure-Object -Sum).Sum
 
 Write-Host ""
 Write-Host "======================================================"
 Write-Host "  PCS Onboarding Complete: $CustomerName"
 Write-Host "======================================================"
-Write-Host "  Customer RecID           : $CustomerRecId"
-Write-Host "  CAM RecID                : $CAMRecId"
-Write-Host "  CRB RecID                : $CRBRecId"
-Write-Host "  Recovery Plans RecID     : $RPRecId"
-Write-Host "  Risk Assessments created : $($RARecIds.Count)"
-Write-Host "  Security Policies patched: $($SecurityPolicyRecIDs.Count)"
-Write-Host "  Training Videos patched  : $($TrainingVideoRecIDs.Count)"
-Write-Host "  IRDR Sync Token          : $IrdrToken"
-Write-Host "  IRDR Client URL          : $ClientIrdrUrl"
+Write-Host "  Customer RecID            : $CustomerRecId"
+Write-Host "  CAM RecID                 : $CAMRecId"
+Write-Host "  CRB RecID                 : $CRBRecId"
+Write-Host "  Recovery Plans RecID      : $RPRecId"
+Write-Host "  Tech Environments         : $($TechEnvironments -join ', ')"
+Write-Host "  Include AMS               : $IncludeAMS"
+Write-Host "  Risk Assessments created  : $($RARecIds.Count)"
+Write-Host "    Process (P-01..P-13)    : 13"
+if ($TechEnvironments -contains 'W') { Write-Host "    Workstation (W-1.x)     : 5" }
+if ($TechEnvironments -contains 'M') { Write-Host "    M365 (M-1.x)            : 5" }
+if ($TechEnvironments -contains 'E') { Write-Host "    External (E-1.x)        : 5" }
+if ($TechEnvironments -contains 'G') { Write-Host "    Google WS (G-1.x)       : 5" }
+if ($TechEnvironments -contains 'L') { Write-Host "    Linux (L-1.x)           : 5" }
+if ($IncludeAMS)                     { Write-Host "    AMS (AM-01..AM-07)      : 7" }
+Write-Host "  Total Inherent Risk Pts   : $TotalInherentRisk"
+Write-Host "  Security Policies patched : $($SecurityPolicyRecIDs.Count)"
+Write-Host "  Training Videos patched   : $($TrainingVideoRecIDs.Count)"
+Write-Host "  IRDR Sync Token           : $IrdrToken"
+Write-Host "  IRDR Client URL           : $ClientIrdrUrl"
 Write-Host "======================================================"
-```
